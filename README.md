@@ -42,7 +42,7 @@ All below commands are run from within the root of this folder.
 
 ### Install dependencies
 
-`pip install requests && pip install dotenv && pip install arcgis`
+`pip install requests && pip install polling && pip install dotenv && pip install arcgis`
 
 ### Run The Script
 
