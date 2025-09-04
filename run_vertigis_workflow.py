@@ -20,7 +20,7 @@ workflow_id = os.getenv("WORKFLOW_ID")
 use_websockets = True          # Uses Polling when set to False.
 polling_timeout = 300          # 5 minutes
 polling_step = 1
-verify_cert = False            # Warning: It is a securtity risk to set this to False.
+verify_cert = True             # Warning: It is a securtity risk to set this to False.
 log_filename = "Log_File.log"
 
 logging.basicConfig(
