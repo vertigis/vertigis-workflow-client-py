@@ -1,46 +1,55 @@
-import os
-import sys
-import time
+import asyncio
+import json
 import logging
-import requests 
-from dotenv import load_dotenv
+import os
+import polling
+import requests
+import ssl
 from arcgis.gis import GIS
-from datetime import datetime
+from dotenv import load_dotenv
+from websockets.asyncio.client import connect
 
 # Configuration
 load_dotenv()
 username = os.getenv("ARCGIS_USERNAME")
 password = os.getenv("ARCGIS_PASSWORD")
 portal_url = os.getenv("ARCGIS_PORTAL_URL")
-workflow_url = os.getenv("WORKFLOW_URL")
+workflow_server_url = os.getenv("WORKFLOW_SERVER_URL")
 workflow_id = os.getenv("WORKFLOW_ID")
 
-
+use_websockets = True          # Uses Polling when set to False.
+polling_timeout = 300          # 5 minutes
+polling_step = 1
+verify_cert = True             # Warning: It is a securtity risk to set this to False.
 log_filename = "Log_File.log"
+
 logging.basicConfig(
     filename=log_filename,
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filemode='a'  # Append mode to keep existing logs and add new lines
+    filemode='a'                # Append mode to keep existing logs and add new lines
 )
 
-def run_vertigis_workflow(esriToken):
-    # Generate vertigis token
-    auth_token_run_url = workflow_url + "/auth/token/run"
+async def run_vertigis_workflow(esri_token):
+    # Generate Access Token
+    auth_token_run_url = workflow_server_url + "/auth/token/run"
     headers = {
         "Content-Type": "application/json"
     }
     payload = {
-        "accessToken": esriToken,
+        "accessToken": esri_token,
         "portalUrl": portal_url,
     }
     response = requests.post(auth_token_run_url, headers=headers, json=payload, verify=False)
-    logging.info(f"VertiGIS Auth Token Response: {response.status_code} - {response.text}")
-    vertigisToken = response.json().get("token")
-    headers["Authorization"] = f"Bearer {vertigisToken}"
-   
-    # Submit job
-    job_run_url = workflow_url + "/job/run"
+    vertigis_token = response.json().get("token")
+    if (vertigis_token is None):
+        logging.info("Failed to retrieve VertiGIS Workflow Access Token from " + auth_token_run_url)
+    else:
+        logging.info("VertiGIS Workflow Access Token: " + vertigis_token)
+    headers["Authorization"] = f"Bearer {vertigis_token}"
+
+    # Submit Job
+    job_run_url = workflow_server_url + "/job/run"
     payload = {
         "workflow": {
             "id": workflow_id
@@ -49,51 +58,84 @@ def run_vertigis_workflow(esriToken):
     }
     response = requests.post(job_run_url, headers=headers, json=payload, verify=False)
     ticket = response.json().get("ticket")
-    logging.info(f"VertiGIS Submit Job Response: {response.status_code} - {response.text}")
+    logging.info("VertiGIS Workflow Job Ticket: " + ticket)
 
-    # Get job artifacts
-    artifacts_url = workflow_url + "/job/artifacts"
+    # Get Job Artifacts
+    artifacts_url = workflow_server_url + "/job/artifacts"
     params = {
         "ticket": ticket
     }
-    response = requests.get(artifacts_url, params=params, headers=headers, verify=False)
-    tag = response.json().get("results")[0].get("tag")
-    logging.info(f"VertiGIS Job Artifacts Response: {response.status_code} - {response.text}")
+    def get_outputs(results):
+        if results:
+            job_quit_artifact = next((artifact for artifact in results if artifact.get("$type") == "JobQuit"), None)
+            if job_quit_artifact:
+                job_result_artifact = next((artifact for artifact in results if artifact.get("$type") == "JobResult"), None)
+                if job_result_artifact:
+                    return job_result_artifact.get("outputs")
+        return None
+    def wait_for_job_result_polling():
+        def get_polling_outputs():
+            data = requests.get(artifacts_url, params=params, headers=headers, verify=verify_cert).json()
+            results = data.get("results", [])
+            return get_outputs(results)
+        outputs = polling.poll(
+            get_polling_outputs,
+            check_success=lambda v: v is not None,
+            step=polling_step,
+            timeout=polling_timeout
+        )
+        return outputs
+    async def wait_for_job_result_websocket():
+        # If 'https', this will intentionally result is 'wss' 
+        websocket_artifacts_url = artifacts_url.replace("http",  "ws")
+        artifacts_service_url = f"{websocket_artifacts_url}?ticket={ticket}"
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        async with connect(artifacts_service_url, ssl=True if verify_cert == True else ssl_context) as websocket:
+            message = await websocket.recv()
+            data = json.loads(message)
+            results = data.get("results", [])
+            return get_outputs(results)
+    outputs = None
+    if (use_websockets):
+        outputs = await wait_for_job_result_websocket()
+    else:
+        outputs = wait_for_job_result_polling()
+    logging.info(f"VertiGIS Workflow Outputs: {outputs}")
+    print(outputs)
 
-    # Get job result
-    result_url = workflow_url + "/job/result"
-    params = {
-        "ticket": ticket,
-        "tag": tag
-    }
-    response = requests.get(result_url, params=params, headers=headers, verify=False)
-    output = response.json().get("output")
-    logging.info(f"VertiGIS Job Results Response: {response.status_code} - {response.text}")
-    
-    # Workflow has finished executing, print workflow output.
-    print(output)
 
+async def main():
+    global username
+    global password
+    global portal_url
 
-def main():
-    esriToken: None
+    if (password == ""):
+        password = None
+
+    if (portal_url == ""):
+        portal_url = None
+
+    esri_token = None
     try:
-        gis = GIS(portal_url, username, password, verify_cert=False)
+        gis = GIS(portal_url, username, password, verify_cert=verify_cert)
         logging.info(f"Successfully logged in to GIS Portal as: {gis.users.me.username}")
-        esriToken = gis._con.token
-        logging.info(f"ArgGIS Token: {esriToken}")
+        esri_token = gis._con.token
+        logging.info(f"ArgGIS Token: {esri_token}")
     except Exception as e:
         logging.error(f"Error logging into GIS Portal: {e}")
         print(f"Error logging into GIS Portal: {e}")
 
-    try:
-        run_vertigis_workflow(esriToken)
-    except Exception as e:
-        logging.error(f"Error running VertiGIS Workflow: {e}")
-        print(f"Error running VertiGIS Workflow: {e}")
+    if esri_token is not None:
+        try:
+            await run_vertigis_workflow(esri_token)
+        except Exception as e:
+            logging.error(f"Error running VertiGIS Workflow: {e}")
+            print(f"Error running VertiGIS Workflow: {e}")
 
     print(f"\nLogs are available at: {log_filename}")
     logging.info("\n\n\n=========================================================================================\n\n")
 
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main()) 
