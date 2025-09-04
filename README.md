@@ -42,7 +42,7 @@ All below commands are run from within the root of this repository.
 
 ### Install dependencies
 
-`pip install requests && pip install polling && pip install dotenv && pip install arcgis`
+`(venv) $ pip install requests && pip install polling && pip install dotenv && pip install arcgis && pip install websockets`
 
 ### Run The Script
 
@@ -50,7 +50,7 @@ Once you have:
 1) Created your `.env` file 
 2) Created and activated the virtual directory
 
-Run the script with `python3 run_vertigis_workflow.py`
+Run the script with `(venv) $ python3 run_vertigis_workflow.py`
 
 ### Deactive the virtual environment
 
@@ -61,4 +61,6 @@ Run the script with `python3 run_vertigis_workflow.py`
 
 - The server from the `WORKFLOW_SERVER_URL` in the .env file must expose an `/auth/token/run` endpoint, and this must be the same server hosting the `WORKFLOW_ID` in the .env file. If it is not, authentication will fail.
 
-- The script prints the result of a `Set Workflow Output` Activity, where the `Name` field is `output`.
+- The script prints the result of the `Set Workflow Output` Activity from the workflow being run.
+
+- Websockets are used by default to connect with the `/job/artifacts` endpoints as an optimization. If websockets are not permitted on your server, you can set `use_websockets = False` and the script will use requests with polling.
